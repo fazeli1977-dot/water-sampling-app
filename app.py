@@ -45,6 +45,32 @@ table.t tr.grp td { background: #f1f5f9; font-weight: 700; }
 .banner { padding: 14px 18px; border-radius: 10px; font-weight: 700; margin: .5rem 0; font-size: 1.1rem; }
 .card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 14px 18px; }
 .muted { color: #64748b; font-size: .85rem; }
+/* ---- ظاهر کلی ---- */
+.stApp { background: linear-gradient(180deg, #f0f9ff 0%, #f8fafc 45%, #ffffff 100%); }
+.block-container { padding-top: 2rem; max-width: 1200px; }
+[data-testid="stSidebar"] { background: linear-gradient(180deg, #0c4a6e 0%, #075985 100%); }
+[data-testid="stSidebar"] * { color: #e0f2fe; }
+[data-testid="stSidebar"] h3 { color: #ffffff !important; }
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color: #bae6fd !important; }
+[data-testid="stSidebar"] button { background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.3); color: #fff; }
+h1, h2, h3 { color: #0c4a6e; }
+[data-testid="stMetric"] { background: #ffffff; border: 1px solid #e0f2fe; border-radius: 14px; padding: 16px 18px;
+    box-shadow: 0 4px 14px rgba(2,132,199,.08); }
+[data-testid="stMetricValue"] { color: #0369a1; }
+.stButton > button, .stFormSubmitButton > button { border-radius: 10px; font-weight: 600; transition: all .2s ease; }
+.stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"] {
+    background: linear-gradient(90deg, #0284c7, #0369a1); border: none; box-shadow: 0 4px 12px rgba(2,132,199,.3); }
+[data-testid="stForm"], [data-testid="stExpander"] { background: #ffffff; border-radius: 14px; border: 1px solid #e0f2fe;
+    box-shadow: 0 4px 14px rgba(2,132,199,.06); }
+table.t { background: #fff; border-radius: 10px; overflow: hidden; }
+table.t th { background: #e0f2fe; color: #0c4a6e; }
+.hero { background: linear-gradient(120deg, #0369a1 0%, #0ea5e9 60%, #38bdf8 100%); color: #fff;
+    border-radius: 18px; padding: 26px 30px; margin-bottom: 1.2rem; box-shadow: 0 10px 30px rgba(3,105,161,.25); }
+.hero h2 { color: #fff !important; margin: 0 0 6px 0; font-size: 1.7rem; }
+.hero p { color: #e0f2fe !important; margin: 0; }
+.app-footer { margin-top: 3rem; padding: 14px; text-align: center; color: #475569; font-size: .9rem;
+    border-top: 1px solid #e2e8f0; }
+.app-footer b { color: #0c4a6e; }
 </style>
 """
 
@@ -109,8 +135,9 @@ def goto(page: str) -> None:
 # ورود و ثبت‌نام
 # ---------------------------------------------------------------------------
 def auth_page() -> None:
-    st.title("💧 سامانه نمونه‌برداری و آزمایش آب و پساب")
-    st.caption("ثبت نمونه، ثبت نتایج آزمایشگاه و بررسی انطباق با ضوابط سازمان حفاظت محیط زیست")
+    st.markdown('<div class="hero"><h2>💧 سامانه نمونه‌برداری و آزمایش آب و پساب</h2>'
+                '<p>ثبت نمونه، ثبت نتایج آزمایشگاه و بررسی انطباق با ضوابط سازمان حفاظت محیط زیست</p></div>',
+                unsafe_allow_html=True)
     _, mid, _ = st.columns([1, 2, 1])
     with mid:
         tab_in, tab_up = st.tabs(["ورود", "ثبت‌نام"])
@@ -152,7 +179,8 @@ def auth_page() -> None:
 # داشبورد
 # ---------------------------------------------------------------------------
 def page_dashboard(user: dict) -> None:
-    st.header("داشبورد")
+    st.markdown(f'<div class="hero"><h2>خوش آمدید، {esc(user["full_name"])}</h2>'
+                f'<p>وضعیت کلی نمونه‌ها و نتایج آزمایشگاه شما</p></div>', unsafe_allow_html=True)
     stats = db.get_stats(user["id"])
     cols = st.columns(6)
     for col, (label, key) in zip(cols, [("کل نمونه‌ها", "total"), ("آنالیز شده", "analyzed"),
@@ -525,4 +553,12 @@ def main() -> None:
      "حساب کاربری": lambda: page_account(user)}[page]()
 
 
-main()
+def footer() -> None:
+    st.markdown('<div class="app-footer">توسعه‌دهنده: <b>علیرضا فاضلی ثانی</b></div>',
+                unsafe_allow_html=True)
+
+
+try:
+    main()
+finally:
+    footer()
