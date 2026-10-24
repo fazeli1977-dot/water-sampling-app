@@ -1,0 +1,9 @@
+streamlit>=1.40
+fpdf2>=2.7.9,<3
+python-bidi>=0.4.2
+arabic-reshaper>=3.0
+folium>=0.16
+streamlit-folium>=0.22
+jdatetime>=4.1
+Pillow>=10.0
+tzdata
