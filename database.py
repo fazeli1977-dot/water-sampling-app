@@ -30,10 +30,55 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{3,32}$")
 
 
 # ---------------------------------------------------------------------------
-# اتصال
+# اتصال (PostgreSQL/Supabase در صورت وجود DATABASE_URL، وگرنه SQLite محلی)
 # ---------------------------------------------------------------------------
+def _database_url() -> str:
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if url:
+        return url
+    try:
+        import streamlit as st
+        return str(st.secrets.get("DATABASE_URL", "")).strip()
+    except Exception:
+        return ""
+
+
+DATABASE_URL = _database_url()
+USE_PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+
+if USE_PG:
+    import psycopg2
+    import psycopg2.extras
+    IntegrityError = psycopg2.IntegrityError
+else:
+    IntegrityError = sqlite3.IntegrityError
+
+
+class _PgConn:
+    """پوششی نازک تا همان SQL با جای‌نگهدار ? روی PostgreSQL هم کار کند."""
+
+    def __init__(self, raw):
+        self.raw = raw
+
+    def execute(self, sql: str, params=()):
+        cur = self.raw.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql.replace("?", "%s"), tuple(params))
+        return cur
+
+
 @contextmanager
 def get_conn():
+    if USE_PG:
+        raw = psycopg2.connect(DATABASE_URL, connect_timeout=15, sslmode="require")
+        try:
+            yield _PgConn(raw)
+            raw.commit()
+        except Exception:
+            raw.rollback()
+            raise
+        finally:
+            raw.close()
+        return
     os.makedirs(DATA_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -47,8 +92,60 @@ def get_conn():
     finally:
         conn.close()
 
+_PG_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS Users (
+        id SERIAL PRIMARY KEY,
+        username TEXT NOT NULL,
+        full_name TEXT NOT NULL,
+        organization TEXT,
+        password_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL)""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username ON Users (LOWER(username))",
+    """CREATE TABLE IF NOT EXISTS Samples (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES Users(id) ON DELETE CASCADE,
+        sample_code TEXT NOT NULL,
+        sample_date TEXT NOT NULL,
+        sample_time TEXT,
+        sample_type TEXT NOT NULL,
+        location_name TEXT NOT NULL,
+        latitude DOUBLE PRECISION NOT NULL,
+        longitude DOUBLE PRECISION NOT NULL,
+        sampler_name TEXT NOT NULL,
+        sampling_method TEXT,
+        lab_name TEXT,
+        weather TEXT,
+        air_temp DOUBLE PRECISION,
+        notes TEXT,
+        created_at TEXT NOT NULL)""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_samples_code ON Samples (user_id, LOWER(sample_code))",
+    """CREATE TABLE IF NOT EXISTS LabResults (
+        id SERIAL PRIMARY KEY,
+        sample_id INTEGER NOT NULL UNIQUE REFERENCES Samples(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES Users(id) ON DELETE CASCADE,
+        analysis_date TEXT NOT NULL,
+        analyst_name TEXT,
+        standard_category TEXT NOT NULL,
+        parameters_json TEXT NOT NULL,
+        overall_status TEXT NOT NULL,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_samples_user ON Samples(user_id)",
+    "CREATE INDEX IF NOT EXISTS idx_results_user ON LabResults(user_id)",
+]
+
 
 def init_db() -> None:
+    if USE_PG:
+        with get_conn() as conn:
+            for stmt in _PG_SCHEMA:
+                conn.execute(stmt)
+        return
+    _init_sqlite()
+
+
+def _init_sqlite() -> None:
     with get_conn() as conn:
         conn.executescript(
             """
@@ -150,14 +247,14 @@ def create_user(username: str, full_name: str, password: str,
                  hash_password(password), jalali_now_str()),
             )
         return True, "حساب کاربری با موفقیت ایجاد شد. اکنون وارد شوید."
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         return False, "این نام کاربری قبلاً ثبت شده است."
 
 
 def authenticate(username: str, password: str) -> dict | None:
     username = to_en_digits(username or "").strip()
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM Users WHERE username = ?", (username,)).fetchone()
+        row = conn.execute("SELECT * FROM Users WHERE LOWER(username) = LOWER(?)", (username,)).fetchone()
     if row and verify_password(password or "", row["password_hash"]):
         return _public_user(row)
     return None
@@ -190,7 +287,7 @@ def change_password(user_id: int, old_password: str, new_password: str) -> tuple
     return True, "رمز عبور با موفقیت تغییر کرد."
 
 
-def _public_user(row: sqlite3.Row) -> dict:
+def _public_user(row) -> dict:
     d = dict(row)
     d.pop("password_hash", None)
     return d
@@ -199,7 +296,7 @@ def _public_user(row: sqlite3.Row) -> dict:
 # ---------------------------------------------------------------------------
 # نمونه‌ها
 # ---------------------------------------------------------------------------
-def generate_sample_code(conn: sqlite3.Connection, user_id: int, sample_date: str) -> str:
+def generate_sample_code(conn, user_id: int, sample_date: str) -> str:
     """کد یکتا: WS-YYYYMMDD-NNN (شماره‌ی ترتیبی نمونه‌های همان روز برای کاربر)."""
     compact = sample_date.replace("/", "")
     prefix = f"WS-{compact}-"
@@ -224,7 +321,7 @@ def suggest_sample_code(user_id: int, sample_date: str) -> str:
 def sample_code_exists(user_id: int, sample_code: str) -> bool:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT 1 FROM Samples WHERE user_id = ? AND sample_code = ? COLLATE NOCASE",
+            "SELECT 1 FROM Samples WHERE user_id = ? AND LOWER(sample_code) = LOWER(?)",
             (user_id, (sample_code or "").strip()),
         ).fetchone()
     return row is not None
@@ -240,7 +337,7 @@ def add_sample(user_id: int, data: dict[str, Any]) -> tuple[int, str]:
         if not code:
             code = generate_sample_code(conn, user_id, data["sample_date"])
         dup = conn.execute(
-            "SELECT 1 FROM Samples WHERE user_id = ? AND sample_code = ? COLLATE NOCASE",
+            "SELECT 1 FROM Samples WHERE user_id = ? AND LOWER(sample_code) = LOWER(?)",
             (user_id, code)).fetchone()
         if dup:
             raise ValueError(f"کد نمونه «{code}» قبلاً در حساب شما ثبت شده است.")
@@ -248,14 +345,15 @@ def add_sample(user_id: int, data: dict[str, Any]) -> tuple[int, str]:
             """INSERT INTO Samples (user_id, sample_code, sample_date, sample_time, sample_type,
                    location_name, latitude, longitude, sampler_name, sampling_method,
                    lab_name, weather, air_temp, notes, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               RETURNING id""",
             (user_id, code, data["sample_date"], data.get("sample_time"),
              data["sample_type"], data["location_name"], float(data["latitude"]),
              float(data["longitude"]), data["sampler_name"], data.get("sampling_method"),
              data.get("lab_name"), data.get("weather"), data.get("air_temp"),
              data.get("notes"), jalali_now_str()),
         )
-        return cur.lastrowid, code
+        return int(cur.fetchone()["id"]), code
 
 
 _SAMPLE_SELECT = """
@@ -344,15 +442,15 @@ def delete_lab_result(sample_id: int, user_id: int) -> None:
 
 def get_stats(user_id: int) -> dict[str, int]:
     with get_conn() as conn:
-        total = conn.execute("SELECT COUNT(*) FROM Samples WHERE user_id = ?",
-                             (user_id,)).fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) AS n FROM Samples WHERE user_id = ?",
+                             (user_id,)).fetchone()["n"]
         rows = conn.execute(
             "SELECT overall_status, COUNT(*) AS n FROM LabResults WHERE user_id = ? "
             "GROUP BY overall_status", (user_id,)).fetchall()
         month_prefix = jalali_today().strftime("%Y/%m/")
         this_month = conn.execute(
-            "SELECT COUNT(*) FROM Samples WHERE user_id = ? AND sample_date LIKE ?",
-            (user_id, month_prefix + "%")).fetchone()[0]
+            "SELECT COUNT(*) AS n FROM Samples WHERE user_id = ? AND sample_date LIKE ?",
+            (user_id, month_prefix + "%")).fetchone()["n"]
     by_status = {r["overall_status"]: r["n"] for r in rows}
     analyzed = sum(by_status.values())
     return {

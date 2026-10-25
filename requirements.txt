@@ -7,3 +7,4 @@ streamlit-folium>=0.22
 jdatetime>=4.1
 Pillow>=10.0
 tzdata
+psycopg2-binary>=2.9
